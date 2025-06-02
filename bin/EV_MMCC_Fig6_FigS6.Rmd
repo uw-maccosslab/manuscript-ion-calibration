@@ -1,0 +1,777 @@
+---
+title: "Figure 6"
+output: html_document
+date: "2025-04-08"
+---
+
+
+# Libraries
+```{r}
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(ggpubr)
+library(ggthemes)
+library(tidyr)
+library(scales)
+require(tidyverse)
+library(PupillometryR)
+library(ggrepel)
+
+# Define the function
+process_data <- function(data, reference_column, numd, instrum) {
+  # numd is the replicate number
+  data1 <- data %>%
+  select(Protein, contains(numd)) %>%
+  mutate(across(everything(), ~ ifelse(. == "#N/A", 0, .))) %>%
+  mutate(across(-Protein, as.numeric))
+  data1 %>%
+    mutate(across(starts_with(instrum), # "Actis_1uL"
+                  ~ . / !!sym(reference_column),
+                  .names = "Ratio_{.col}")) %>%
+    select(Protein, contains("Ratio")) %>%
+    pivot_longer(
+      cols = starts_with("Ratio"),
+      names_to = "Ratio_Type",
+      values_to = "Ratio_Value"
+    ) %>%
+    mutate(
+      Log2_Ratio = log2(Ratio_Value),
+      Log2_Ratio = na_if(Log2_Ratio, -Inf),
+      Condition = case_when(
+        str_detect(Ratio_Type, "MixA") ~ "100%",
+        str_detect(Ratio_Type, "MixB") ~ "70%",
+        str_detect(Ratio_Type, "MixC") ~ "50%",
+        str_detect(Ratio_Type, "MixD") ~ "30%",
+        str_detect(Ratio_Type, "MixE") ~ "10%",
+        str_detect(Ratio_Type, "MixF") ~ "7%",
+        str_detect(Ratio_Type, "MixG") ~ "5%",
+        str_detect(Ratio_Type, "MixH") ~ "3%",
+        str_detect(Ratio_Type, "MixI") ~ "1%",
+        str_detect(Ratio_Type, "MixJ") ~ "0.7%",
+        str_detect(Ratio_Type, "MixK") ~ "0.5%",
+        str_detect(Ratio_Type, "MixL") ~ "0.3%",
+        str_detect(Ratio_Type, "MixM") ~ "0.1%",
+        str_detect(Ratio_Type, "MixN") ~ "0%",
+        TRUE ~ NA_character_  # Default case if no match is found
+      )
+    )
+}
+
+
+# Define the function
+process_data_peptide <- function(data, reference_column, numd, instrum) {
+  # numd is the replicate number
+  data1 <- data %>%
+  select(Peptide, contains(numd)) %>%
+  mutate(across(everything(), ~ ifelse(. == "#N/A", 0, .))) %>%
+  mutate(across(-Peptide, as.numeric))
+  data1 %>%
+    mutate(across(starts_with(instrum), # "Actis_1uL"
+                  ~ . / !!sym(reference_column),
+                  .names = "Ratio_{.col}")) %>%
+    select(Peptide, contains("Ratio")) %>%
+    pivot_longer(
+      cols = starts_with("Ratio"),
+      names_to = "Ratio_Type",
+      values_to = "Ratio_Value"
+    ) %>%
+    mutate(
+      Log2_Ratio = log2(Ratio_Value),
+      Log2_Ratio = na_if(Log2_Ratio, -Inf),
+      Condition = case_when(
+        str_detect(Ratio_Type, "MixA") ~ "100%",
+        str_detect(Ratio_Type, "MixB") ~ "70%",
+        str_detect(Ratio_Type, "MixC") ~ "50%",
+        str_detect(Ratio_Type, "MixD") ~ "30%",
+        str_detect(Ratio_Type, "MixE") ~ "10%",
+        str_detect(Ratio_Type, "MixF") ~ "7%",
+        str_detect(Ratio_Type, "MixG") ~ "5%",
+        str_detect(Ratio_Type, "MixH") ~ "3%",
+        str_detect(Ratio_Type, "MixI") ~ "1%",
+        str_detect(Ratio_Type, "MixJ") ~ "0.7%",
+        str_detect(Ratio_Type, "MixK") ~ "0.5%",
+        str_detect(Ratio_Type, "MixL") ~ "0.3%",
+        str_detect(Ratio_Type, "MixM") ~ "0.1%",
+        str_detect(Ratio_Type, "MixN") ~ "0%",
+        TRUE ~ NA_character_  # Default case if no match is found
+      )
+    )
+}
+
+
+line_size <- 1 # defining variable upfront as we will re-use it
+base_size <- 12 # defining separately, same as for line_size
+axis_text_rel_size = -1
+title_text_rel_size = +2
+
+
+
+prism_theme <- theme_foundation(base_size = base_size, base_family = "sans") +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    text = element_text(colour = "black"),
+    plot.title = element_text(
+      face = "bold",
+      size = rel((title_text_rel_size + base_size) / base_size),
+      hjust = 0.5
+    ),
+    axis.line = element_line(colour = "black", size = line_size),
+    axis.ticks = element_line(colour = "black", size = line_size),
+    axis.title = element_text(face = "bold", size = rel(1)),
+    axis.title.y = element_text(angle = 90, vjust = 2),
+    axis.title.x = element_text(vjust = -0.2),
+    axis.text = element_text(face = "bold", size = rel((axis_text_rel_size + base_size) / base_size)),
+    axis.text.x = element_text(  # Specifically adjust x-axis text
+      face = "bold",
+      size = rel((axis_text_rel_size + base_size) / base_size),
+      angle = 45,
+      hjust = 1,
+      vjust = 1
+    ),
+    plot.background = element_blank(),
+    legend.title = element_text(
+      face = "bold",  # Same as axis titles
+      size = rel(1),  # Match axis title size
+      colour = "black"  # Ensure color consistency
+    ),
+    legend.text = element_text(
+      face = "bold",  # Same as axis text
+      size = rel((axis_text_rel_size + base_size) / base_size),  # Match axis text size
+      colour = "black"
+    )
+  )
+
+
+
+
+mmcc_plotting <- function(df, scaling, titleplot) {
+  library(ggplot2)
+  library(dplyr)
+
+  # Labels
+  MM_BHV_yaxval <- expression("Log"[2]~"(A/A"[100]~")")
+  MM_BHV_xaxval <- expression("% Human")
+
+  # Color palette
+  PaletteBoxviol <- rep("#08306B", 7)
+
+  # Threshold parameters
+  MM_pt0 <- 0.72
+  MM_bxviL <- 1.0
+
+  # Clean and filter data
+  MM_pep_boxviol_100plot <- df %>%
+    filter(Condition %in% c("1%", "5%", "10%", "30%", "50%", "70%"),
+           !is.infinite(mean_L2R),
+           !is.nan(mean_L2R)) %>%
+    mutate(Condition = factor(Condition, levels = c("1%", "5%", "10%", "30%", "50%", "70%")))
+
+  # Precompute y and xend values for reference lines
+  hlines <- data.frame(
+    y = log2(c(1, 5, 10, 30, 50, 70) / scaling),
+    xend = MM_pt0 + c(0.75, 1+MM_bxviL, 2+MM_bxviL, 3+MM_bxviL, 4+MM_bxviL, 5+MM_bxviL),
+    color = PaletteBoxviol[1:6]
+  )
+
+  # Plot
+  instrument_100plot <- ggplot(MM_pep_boxviol_100plot, aes(x = Condition, y = mean_L2R, fill = Condition, color = Condition)) +
+    # Add reference lines
+    geom_segment(data = hlines, aes(x = 0, xend = xend, y = y, yend = y),
+                 inherit.aes = FALSE, linetype = "dashed", color = hlines$color, linewidth = 0.5) +
+    
+    # Violin plot (flat side)
+    geom_flat_violin(scale = "area", width = 1, trim = TRUE, alpha = 0.2, position = position_nudge(x = 0.2)) +
+
+    # Box plot
+    geom_boxplot(width = 0.3, outlier.shape = NA, alpha = 1, notch = FALSE,
+                 linewidth = 0.3, fill = NA) +
+
+    # Axis settings
+    ylim(-10, 2) +
+    scale_x_discrete(expand = c(0.1, 0)) +
+
+    # Updated aesthetic settings
+    theme_classic() +
+    theme(
+      text = element_text(size = 16),
+      axis.title = element_text(size = 18),
+      axis.text = element_text(size = 15),
+      legend.title = element_text(size = 16),
+      legend.text = element_text(size = 15),
+      strip.text = element_text(size = 16),
+      legend.position = "none"
+    ) +
+
+    # Labels and manual colors
+    labs(title = titleplot, x = MM_BHV_xaxval, y = MM_BHV_yaxval) +
+    scale_colour_manual(values = PaletteBoxviol) +
+    scale_fill_manual(values = PaletteBoxviol)
+
+  return(instrument_100plot)
+}
+
+```
+
+
+# Figure 6: Protein MMCC plots
+## Actis plot
+```{r}
+
+
+df_actis = read.csv("../data/extracellular_vesicles/MMCC/Actis_Protein_Total_Areas.csv")
+
+
+data_1_actis_100ratio <- process_data(data = df_actis, 
+                                      reference_column = "Actis_MixA_01.Sum.Normalized.Area", 
+                                      numd = "01", instrum = "Actis")
+data_2_actis_100ratio <- process_data(df_actis, "Actis_MixA_02.Sum.Normalized.Area", "02", "Actis")
+data_3_actis_100ratio <- process_data(df_actis, "Actis_MixA_03.Sum.Normalized.Area", "03", "Actis")
+
+
+
+
+combined_data_100actis <- bind_rows(data_1_actis_100ratio, data_2_actis_100ratio, data_3_actis_100ratio)
+
+
+combined_data_100actis1 = combined_data_100actis %>%
+  group_by(Protein, Condition) %>%
+                      summarize(.,
+                      mean_Ratio = mean(Ratio_Value),
+                      mean_L2R = mean(Log2_Ratio),
+                      sd_L2R = sd(Log2_Ratio),
+                      CV_L2R = ((sd_L2R/mean_L2R)*100))
+
+
+
+actis_100_plot = mmcc_plotting(combined_data_100actis1, 100, "Prototype protein-level")
+
+actis_100_plot
+
+```
+
+
+
+
+## Astral plot
+```{r}
+
+df_astral = read.csv("../data/extracellular_vesicles/MMCC/Astral_Protein_Total_Areas.csv")
+
+
+data_1_astral_100ratio <- process_data(data = df_astral, 
+                                      reference_column = "Astral_MixA_01.Sum.Normalized.Area", 
+                                      numd = "01", instrum = "Astral")
+data_2_astral_100ratio <- process_data(df_astral, "Astral_MixA_02.Sum.Normalized.Area", "02", "Astral")
+data_3_astral_100ratio <- process_data(df_astral, "Astral_MixA_03.Sum.Normalized.Area", "03", "Astral")
+
+
+combined_data_100astral <- bind_rows(data_1_astral_100ratio, data_2_astral_100ratio, data_3_astral_100ratio)
+
+
+combined_data_100astral1 = combined_data_100astral %>%
+  group_by(Protein, Condition) %>%
+                      summarize(.,
+                      mean_Ratio = mean(Ratio_Value),
+                      mean_L2R = mean(Log2_Ratio),
+                      sd_L2R = sd(Log2_Ratio),
+                      CV_L2R = ((sd_L2R/mean_L2R)*100))
+
+astral_100_plot = mmcc_plotting(combined_data_100astral1, 100, "Astral")
+
+astral_100_plot
+
+```
+
+
+
+## Full plot Fig 6
+```{r, fig.width= 10, fig.height=5}
+
+actis_100_plot = mmcc_plotting(combined_data_100actis1, 100, "Prototype")
+astral_100_plot = mmcc_plotting(combined_data_100astral1, 100, "Astral")
+
+
+fig6 = (astral_100_plot + actis_100_plot) + plot_annotation(tag_levels = "A") & 
+  theme(plot.tag = element_text(size = 20, face = "bold"))
+
+
+
+fig6_prot = (astral_100_plot + actis_100_plot) + plot_annotation(tag_levels = "A") & 
+  theme(plot.tag = element_text(size = 20, face = "bold"))
+
+
+fig6_prot
+
+ggsave("../figures/Figure_6.png", plot = fig6, width = 10, height = 5, dpi = 700)
+
+
+```
+
+
+
+
+# Figure S6
+## Fig. S6AB: ID list
+```{r, fig.width= 10, fig.height=5}
+
+# Read in data
+actis_mmcc_reportstats <- read_tsv("../data/extracellular_vesicles/DIANN_search/Actis_MMCC_report.stats.tsv")
+astral_mmcc_reportstats <- read_tsv("../data/extracellular_vesicles/DIANN_search/Astral_MMCC_report.stats.tsv")
+
+# Combine and label instruments
+combined_mmcc_stats <- bind_rows(
+  actis_mmcc_reportstats[1:3, ],
+  astral_mmcc_reportstats[1:3, ]
+)
+
+combined_mmcc_stats$Instrument <- ifelse(
+  grepl("Astral", combined_mmcc_stats$File.Name, ignore.case = TRUE), "Astral",
+  ifelse(grepl("Actis", combined_mmcc_stats$File.Name, ignore.case = TRUE), "Actis", NA)
+)
+
+# Rename and order factors
+combined_mmcc_stats <- combined_mmcc_stats %>%
+  mutate(Instrument = recode(Instrument, "Actis" = "Prototype"))
+
+combined_mmcc_stats$Instrument <- factor(combined_mmcc_stats$Instrument, levels = c("Astral", "Prototype"))
+
+# Set color palette
+my_colors <- c("Astral" = "#4393C3", "Prototype" = "#D6604D")
+
+# Optional theme if not defined
+if (!exists("prism_theme")) {
+  prism_theme <- theme_minimal(base_size = 12)
+}
+
+# Plot A: Precursors Identified
+precursorplt1 <- ggplot(combined_mmcc_stats, aes(x = Instrument, y = Precursors.Identified, fill = Instrument)) +
+  stat_summary(fun = mean, geom = "bar", position = position_dodge(0.8), width = 0.7) +
+  stat_summary(fun.data = mean_sdl, fun.args = list(mult = 1), 
+               geom = "errorbar", position = position_dodge(0.8), width = 0.3, size = 0.5, color = "black") +
+  stat_summary(
+    fun = mean,
+    geom = "text",
+    aes(label = round(..y.., 0)),
+    vjust = -1.2,
+    size = 5,
+    color = "black"
+  ) +
+  geom_point(
+    aes(color = TissueSize), 
+    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8), 
+    shape = 18, size = 1.5, color = "#5A5A5A"
+  ) +
+  stat_compare_means(
+    method = "t.test",
+    comparisons = list(c("Prototype", "Astral")),
+    label = "p.format",
+    label.y = 85000  # bumped up from 78000
+  ) +
+  scale_fill_manual(values = my_colors) +
+  scale_y_continuous(limits = c(0, 90000), expand = c(0, 0)) +
+  labs(x = "", y = "Precursors detected", fill = "Instrument") +
+  prism_theme +
+  theme(legend.position = "none") + 
+  theme_bw() + theme(
+    legend.title = element_blank(),
+    panel.grid.major = element_line(linetype = "dashed", color = "gray80"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    strip.text = element_text(size = 14),  
+    axis.text.x = element_text(angle = 45, hjust = 1),
+  )
+
+
+proteinplt1 <- ggplot(combined_mmcc_stats, aes(x = Instrument, y = Proteins.Identified, fill = Instrument)) +
+  stat_summary(fun = mean, geom = "bar", position = position_dodge(0.8), width = 0.7) +
+  stat_summary(fun.data = mean_sdl, fun.args = list(mult = 1), 
+               geom = "errorbar", position = position_dodge(0.8), width = 0.3, size = 0.5, color = "black") +
+  stat_summary(
+    fun = mean,
+    geom = "text",
+    aes(label = round(..y.., 0)),
+    vjust = -1.2,
+    size = 5,
+    color = "black"
+  ) +
+  geom_point(
+    aes(color = TissueSize), 
+    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8), 
+    shape = 18, size = 1.5, color = "#5A5A5A"
+  ) +
+  stat_compare_means(
+    method = "t.test",
+    comparisons = list(c("Prototype", "Astral")),
+    label = "p.format",
+    label.y = 5750  # bumped up from 5200
+  ) +
+  scale_y_continuous(limits = c(0, 6150), expand = c(0, 0)) +
+  scale_fill_manual(values = my_colors) +
+  labs(x = "", y = "Proteins detected", fill = "Instrument") +
+  prism_theme +
+  theme(legend.position = "none") + 
+  theme_bw() + theme(
+    legend.title = element_blank(),
+    panel.grid.major = element_line(linetype = "dashed", color = "gray80"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    strip.text = element_text(size = 14),  
+    axis.text.x = element_text(angle = 45, hjust = 1),
+  )
+
+
+# Combine plots with tags A and B
+suppfigure6AB <- (precursorplt1 + proteinplt1) +
+  plot_annotation(tag_levels = "A") & 
+  theme(plot.tag = element_text(size = 20, face = "bold")) + 
+    theme(legend.position = "none")
+
+
+
+#ggsave("../ev_IDs.png", plot = suppfigure6AB, height = 5, width = 10, dpi = 700)
+
+# Display the figure
+suppfigure6AB
+
+
+
+
+```
+
+
+## Fig. S6CD: CV plots
+### Peptide CV
+```{r, fig.width= 10, fig.height=6}
+
+library(plyr)  # Needed for arrange()
+
+
+df_actis_ev_cv = read.csv("../data/extracellular_vesicles/CVs/Actis_CV_peptides.csv")
+df_astral_ev_cv = read.csv("../data/extracellular_vesicles/CVs/Astral_CV_peptides.csv")
+
+
+
+# Add instrument labels
+df_actis_ev_cv <- df_actis_ev_cv %>%
+  mutate(Instrument = "Prototype")
+
+df_astral_ev_cv <- df_astral_ev_cv %>%
+  mutate(Instrument = "Astral")
+
+
+# Combine into one dataframe
+df_combined_ev_cv <- bind_rows(df_actis_ev_cv, df_astral_ev_cv)
+colnames(df_combined_ev_cv)[4] <- "CV"
+
+
+peptide_cv = ggplot(df_combined_ev_cv, aes(x = Instrument, y = CV * 100, fill = Instrument)) +
+  geom_violin()+
+  geom_boxplot(alpha = 0.7, trim = TRUE, width = 0.2, fill = "white") +
+  coord_cartesian(ylim = c(0, 50)) +
+  theme_bw() +
+  labs(x = "", y = "Coefficient of variation (%)", title = "Peptide CV") +
+  scale_fill_manual(values = c("Astral" = "#4393C3", "Prototype" = "#D6604D")) + 
+  theme(
+    legend.position = "none",
+    legend.title = element_blank(),
+    panel.grid.major = element_line(linetype = "dashed", color = "gray80"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+      strip.text = element_text(size = 14),  
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.text = element_text(size = 14),      # <-- Increase text size
+    #legend.title = element_text(size = 16),     # <-- (optional) title size
+    legend.key.size = unit(1.2, "lines"),
+  )
+  #theme(plot.title = element_text(size = 16, hjust = 0))
+
+```
+
+
+### Protein CV
+```{r, fig.width= 10, fig.height=8}
+
+df_actis_ev_prot_cv = read.csv("../data/extracellular_vesicles/CVs/Actis_CV_proteins.csv")
+df_astral_ev_prot_cv = read.csv("../data/extracellular_vesicles/CVs/Astral_CV_proteins.csv")
+
+protein_ev_cv = function(data){
+  # Convert columns 4 to 6 to numeric (if not already)
+  data_numeric <- data
+  data_numeric[, 4:6] <- lapply(data_numeric[, 4:6], function(x) as.numeric(as.character(x)))
+  
+  # Calculate row-wise means and standard deviations for columns 4-6
+  means_4_6 <- rowMeans(data_numeric[, 4:6], na.rm = TRUE)
+  sds_4_6 <- apply(data_numeric[, 4:6], 1, sd, na.rm = TRUE)
+  
+  # Calculate CV (coefficient of variation) as SD / mean
+  data_numeric$CV <- sds_4_6 / means_4_6
+  
+  return(data_numeric)
+}
+
+
+
+df_astral_ev_prot_cv2 = protein_ev_cv(data = df_astral_ev_prot_cv)
+df_actis_ev_prot_cv2 = protein_ev_cv(data = df_actis_ev_prot_cv)
+
+# Add instrument labels
+df_actis_ev_prot_cv2 <- df_actis_ev_prot_cv2 %>%
+  mutate(Instrument = "Prototype")
+
+df_astral_ev_prot_cv2 <- df_astral_ev_prot_cv2 %>%
+  mutate(Instrument = "Astral")
+
+
+
+df_combined_ev_prot_cv <- bind_rows(df_actis_ev_prot_cv2, df_astral_ev_prot_cv2)
+
+
+df_combined_ev_prot_cv_only <- df_combined_ev_prot_cv %>%
+  select(Protein, CV, Instrument)
+
+
+
+protein_cv = ggplot(df_combined_ev_prot_cv_only, aes(x = Instrument, y = CV * 100, fill = Instrument)) +
+  geom_violin()+
+  geom_boxplot(alpha = 0.7, trim = TRUE, width = 0.2, fill = "white") +
+  coord_cartesian(ylim = c(0, 50)) +
+  theme_bw() +
+  labs(x = "", y = "Coefficient of variation (%)", title = "Protein CV") +
+  scale_fill_manual(values = c("Astral" = "#4393C3", "Prototype" = "#D6604D")) + 
+  theme(
+    legend.position = "none",
+    legend.title = element_blank(),
+    panel.grid.major = element_line(linetype = "dashed", color = "gray80"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+      strip.text = element_text(size = 14),  
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.text = element_text(size = 14),      # <-- Increase text size
+    #legend.title = element_text(size = 16),     # <-- (optional) title size
+    legend.key.size = unit(1.2, "lines"),
+  )
+  #theme(plot.title = element_text(size = 16, hjust = 0))
+
+
+
+suppfig6CD <- (peptide_cv + protein_cv) + 
+  plot_layout(guides = "collect") + 
+  plot_annotation(tag_levels = "A") & 
+  theme(
+    legend.position = "none",
+    legend.title = element_blank(),
+    legend.key.size = unit(1.2, "lines"),
+     plot.tag = element_text(size = 20, face = "bold")
+  )
+
+
+suppfig6CD
+```
+
+
+
+
+## Fig. S6C Number of ions
+```{r, fig.width=12, fig.height=8}
+
+df_actis_ions_pept_mmcc = read.csv("../data/extracellular_vesicles/LC_peak_peptide_ions/Actis_Peptide_ions.csv")
+df_astral_ions_pept_mmcc = read.csv("../data/extracellular_vesicles/LC_peak_peptide_ions/Astral_Peptide_ions.csv")
+
+# Keep only the first four columns and rename the fourth column
+df_actis_ions_pept_mmcc <- df_actis_ions_pept_mmcc[, 1:4]
+colnames(df_actis_ions_pept_mmcc)[4] <- "Actis_100"
+
+
+df_astral_ions_pept_mmcc <- df_astral_ions_pept_mmcc[, 1:4]
+colnames(df_astral_ions_pept_mmcc)[4] <- "Astral_100"
+
+
+df_merged_MMCC_ions <- merge(
+  df_actis_ions_pept_mmcc,
+  df_astral_ions_pept_mmcc,
+  by = c("Protein", "Peptide", "Precursor"),
+  all = TRUE  # this does a full outer join
+)
+
+
+
+# Make sure ion columns are numeric (convert if necessary)
+df_merged_MMCC_ions <- df_merged_MMCC_ions %>%
+  mutate(
+    Actis_100 = as.numeric(Actis_100),
+    Astral_100 = as.numeric(Astral_100)
+  )
+
+
+df_merged_MMCC_ions[df_merged_MMCC_ions == "#N/A"] <- 0
+
+
+
+
+canonical_ev_proteins <- c("P21926", "P08962", "Q8WUM4", "O75955", "Q14254", "Q99816", "O00560", "P13591", "P25942", "Q15019","P25705","P14625", "P08758")
+
+# Create a regular expression pattern from your list
+pattern <- paste(canonical_ev_proteins, collapse = "|")
+
+# Filter using grepl to match any of the canonical proteins in the Protein string
+#df_ev_proteins <- df_merged_MMCC_ions[grepl(pattern, df_merged_MMCC_ions$Protein), ]
+#df_ev_proteins[is.na(df_ev_proteins)] <- 0
+
+df_merged_MMCC_ions <- df_merged_MMCC_ions %>%
+  mutate(
+    Actis_100 = as.numeric(Actis_100) / 1.31,
+    Astral_100 = as.numeric(Astral_100) / 1.53
+  )
+
+df_protein_summary <- df_merged_MMCC_ions %>%
+  group_by(Protein) %>%
+  dplyr::summarise(
+    Total_Actis_ions = sum(Actis_100, na.rm = TRUE),
+    Total_Astral_ions = sum(Astral_100, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+
+# Pivot from wide to long
+df_ev_long <- df_protein_summary %>%
+  select(Protein, Total_Actis_ions, Total_Astral_ions) %>%
+  pivot_longer(
+    cols = c(Total_Actis_ions, Total_Astral_ions),
+    names_to = "Instrument",
+    values_to = "IonCount"
+  )
+
+# Rename instrument labels for readability
+df_ev_long$Instrument <- recode(df_ev_long$Instrument,
+                                Total_Actis_ions = "Prototype",
+                                Total_Astral_ions = "Astral")
+
+# Make sure IonCount is numeric (it may still be character)
+df_ev_long$IonCount <- as.numeric(df_ev_long$IonCount)
+
+# Add rankings by instrument
+df_ev_long <- df_ev_long %>%
+  dplyr::group_by(Instrument) %>%
+  dplyr::arrange(desc(IonCount)) %>%
+  dplyr::mutate(Rank = row_number()) %>%
+  ungroup()
+
+
+
+# Extract UniProt accession ID from Protein string (middle part between pipes)
+df_ev_long <- df_ev_long %>%
+  mutate(Accession = sub(".*\\|(.*)\\|.*", "\\1", Protein))
+
+# Mark canonical proteins
+df_ev_long <- df_ev_long %>%
+  mutate(IsCanonical = Accession %in% canonical_ev_proteins)
+
+df_ev_long <- df_ev_long %>%
+  mutate(
+    GeneSymbol = sub(".*\\|(.*)\\_HUMAN", "\\1", Protein)
+  )
+
+
+# Define custom colors for instruments
+my_colors <- c("Astral" = "#4393C3", "Prototype" = "#D6604D")
+
+# Filter out rows with IonCount == 0
+df_ev_long_filtered <- df_ev_long %>%
+  filter(IonCount > 0)
+
+
+
+suppfig6E_ions_plot <- ggplot(df_ev_long_filtered, aes(x = Rank, y = IonCount)) +
+  # Points
+  geom_point(data = filter(df_ev_long_filtered, Instrument == "Astral"),
+             aes(color = Instrument)) +
+  geom_point(data = filter(df_ev_long_filtered, Instrument == "Prototype"),
+             aes(color = Instrument)) +
+
+  # Astral labels (down-right)
+  geom_label_repel(
+    data = filter(df_ev_long_filtered, Instrument == "Astral" & IsCanonical),
+    aes(label = GeneSymbol),
+    fontface = 'bold',
+    fill = my_colors["Astral"],
+    color = "white",
+    size = 4,
+    max.overlaps = getOption("ggrepel.max.overlaps", default = 20),
+    min.segment.length = 0.2,
+    segment.color = 'grey30',
+    nudge_x = 1.5,
+    nudge_y = -1.0,
+    direction = "both",
+    seed = 42
+  ) +
+
+  # Actis labels (up-right)
+  geom_label_repel(
+    data = filter(df_ev_long_filtered, Instrument == "Prototype" & IsCanonical),
+    aes(label = GeneSymbol),
+    fontface = 'bold',
+    fill = my_colors["Prototype"],
+    color = "white",
+    size = 4,
+    max.overlaps = getOption("ggrepel.max.overlaps", default = 20),
+    min.segment.length = 0.2,
+    segment.color = 'grey30',
+    nudge_x = 1.5,
+    nudge_y = 1.5,
+    direction = "both",
+    seed = 42
+  ) +
+
+  # Scale and theme
+  scale_color_manual(values = my_colors) +
+  scale_y_continuous(
+    trans = "log10",
+    breaks = trans_breaks("log10", function(x) 10^x),
+    labels = trans_format("log10", math_format(10^.x))
+  ) +
+  theme_bw() +
+  labs(
+    title = " ",
+    x = "Protein rank by instrument",
+    y = "Protein ion count\n(Sum of LC peak peptide ions)"
+  ) + 
+  theme(
+    legend.position = "bottom",
+    panel.grid.major = element_line(linetype = "dashed", color = "gray80"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    strip.text = element_text(size = 14),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16),
+    legend.key.size = unit(1.2, "lines")
+  )
+
+```
+
+## Full plot Fig. S6
+```{r, fig.width= 8, fig.height=15}
+
+ SupplFig6_final <- (suppfigure6AB / suppfig6CD) / (suppfig6E_ions_plot) +
+   plot_layout(widths = c(0.8, 0.2)) + 
+  plot_annotation(tag_levels = "A") +
+  theme(
+     plot.tag = element_text(size = 20, face = "bold")
+  )
+# Print or save the final figure
+SupplFig6_final
+
+
+ggsave("../figures/Figure_S6_EV.png", plot = SupplFig6_final, width = 8, height = 15, dpi = 700)
+
+```
+
+
