@@ -1,0 +1,1098 @@
+---
+title: "Table 1, FigS2-S3"
+output: html_document
+date: "2025-03-10"
+---
+
+
+```{r, warning=FALSE}
+library(mzR)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(here)
+library(rawrr)
+library(ggthemes)
+library(patchwork)
+library(tools)
+library(fs)
+library(tidyr)
+library(flextable)
+library(RColorBrewer)
+
+
+library(kableExtra)
+library(tidyr)
+library(stringr)
+library(webshot2)
+
+
+```
+
+# Functions
+
+```{r}
+
+processMzML <- function(ms_file) {
+  require(data.table)
+  # Open file and get metadata
+  ms_data <- openMSfile(ms_file)
+  ms_data_header <- header(ms_data)
+  num_spectra <- nrow(ms_data_header)  # Safer than using seqNum
+  injection_times <- ms_data_header$injectionTime
+  # Process spectra using parallelization
+  df_list <- lapply(1:num_spectra, function(i) {
+    spectrum <- spectra(ms_data, i)
+    if (nrow(spectrum) == 0) return(NULL)
+    intensities <- spectrum[, 2]
+    # Order all peaks by intensity in descending order
+    top_idx <- order(intensities, decreasing = TRUE)
+    data.table(
+      scan_num = i,
+      mz = spectrum[top_idx, 1],
+      intensity = intensities[top_idx],
+      injectionTime = injection_times[i]
+    )
+  })
+  close(ms_data)
+  # Combine results using fast rbind
+  rbindlist(df_list)
+}
+
+
+readRawFile <- function(raw_file, num_scans) {
+  print("loaded file.")
+  S <- readSpectrum(rawfile = raw_file, scan = 1:num_scans)
+  print("read spectrum")
+  # Process each scan using lapply and combine results
+  df_combined <- do.call(rbind, lapply(S, function(s) {
+    data.frame(
+      scan_num = s$scan,
+      mz = s$mZ,
+      intensity = s$intensity,
+      stringsAsFactors = FALSE
+    )
+  }))
+  
+  return(df_combined)
+}
+
+
+
+
+processMzMLFiltering <- function(ms_file, number_of_peaks) {
+  require(data.table)
+  # Open file and get metadata
+  ms_data <- openMSfile(ms_file)
+  ms_data_header <- header(ms_data)
+  num_spectra <- nrow(ms_data_header)  # Safer than using seqNum
+  injection_times <- ms_data_header$injectionTime
+  # Process spectra using parallelization
+  df_list <- lapply(1:num_spectra, function(i) {
+    spectrum <- spectra(ms_data, i)
+    if (nrow(spectrum) == 0) return(NULL)
+    intensities <- spectrum[, 2]
+    n_peaks <- min(number_of_peaks, length(intensities))
+    if (n_peaks > 0) {
+      # Fast top-N selection using partial sort
+      top_idx <- head(order(intensities, decreasing = TRUE), n_peaks)
+      data.table(
+        scan_num = i,
+        mz = spectrum[top_idx, 1],
+        intensity = intensities[top_idx],
+        injectionTime = injection_times[i]
+      )
+    }
+  })
+  close(ms_data)
+  # Combine results using fast rbind
+  rbindlist(df_list)
+}
+
+
+findMatchingIonMz <- function(mzML_df, matching_ion_mz_df, tolerance) {
+    # Vectorized computation of absolute differences
+  abs_diff <- abs(outer(mzML_df$mz, matching_ion_mz_df$mz, "-"))
+  # Identify matches within tolerance
+  matches_matrix <- abs_diff < tolerance
+  # Get indices of matches for each astral entry
+  match_indices <- apply(matches_matrix, 1, which)
+  # Assign matched values using list columns to handle multiple matches
+  mzML_df$ion_match <- lapply(match_indices, function(ind) {
+    if (length(ind) > 0) matching_ion_mz_df$ion[ind] else NA
+  })
+  mzML_df$ion_match_intensity <- lapply(match_indices, function(ind) {
+    if (length(ind) > 0) matching_ion_mz_df$mz[ind] else NA
+  })
+  
+  # Remove rows with NA matches first
+  mzML_df <- mzML_df[!is.na(mzML_df$ion_match), ]
+  
+  
+  mzML_df <- mzML_df %>%
+    group_by(scan_num, ion_match) %>%
+    slice_max(order_by = intensity, n = 1, with_ties = FALSE) %>%
+    ungroup()
+  
+  return(mzML_df)
+}
+
+
+calcIonCount <- function(df){
+  df$IonCount = df$intensity * (df$injectionTime / 1000)
+  return(df)
+}
+
+
+calcIntensityRatio <- function(df, ref_ion) {
+  df_ratio <- df %>%
+  group_by(scan_num) %>%
+  mutate(
+    ref_intensity = ifelse(ion_match == ref_ion, intensity, NA),
+    ref_intensity = max(ref_intensity, na.rm = TRUE), 
+    intensity_ratio = ifelse(ion_match != ref_ion,  intensity / ref_intensity, NA)
+  ) %>% ungroup()
+  
+  return(df_ratio)
+}
+
+
+calcIonCalibrationData <- function(df, ref_ion) {
+  
+  A_a_value <- mean(df$IonCount[df$ion_match == ref_ion], na.rm = TRUE)
+  
+  # Group and summarize the data
+  df_grouped <- df %>%
+    group_by(ion_match) %>%
+    summarize(R_bar = mean(intensity_ratio, na.rm = TRUE),
+              R_bar_sq = R_bar^2,
+              sigma_T_sq = var(intensity_ratio, na.rm = TRUE),
+              A_a = A_a_value,
+              A_b = mean(IonCount[ion_match != ref_ion], na.rm = TRUE), 
+              .groups = 'drop')  
+
+  # Add the x calculation
+  df_grouped <- df_grouped %>%
+    mutate(x = R_bar_sq * ((1 / A_a) + (1 / A_b)))
+  
+  # Remove rows with NaN values in the A_a column
+  df_grouped <- df_grouped %>%
+    filter(!is.na(A_b))
+  
+  return(df_grouped)
+}
+
+
+calcLinearRegression <- function(df){
+  return(lm(sigma_T_sq ~ x, data = df))
+}
+
+
+plotLinearRegression <- function(df, ref_ion) {
+  
+  # Fit the model (assuming you've already calculated 'x' in df_grouped)
+  model <- lm(sigma_T_sq ~ x, data = df)
+  # Extract slope (alpha) and intercept (sigma_o_sq)
+  slope <- coef(model)[["x"]]
+  intercept <- coef(model)[["(Intercept)"]]
+  # Format the equation as a string
+  equation <- sprintf(
+    "sigma[T]^2 == %.4f * x + %.4f",
+    slope, intercept
+  )
+
+
+  
+  # Optional: Add R-squared
+  r_squared <- summary(model)$r.squared
+  r_squared_label <- sprintf("R^2 = %.4f", r_squared)
+
+  ggplot(df, aes(x = x, y = sigma_T_sq)) +
+    geom_point(size = 3, color = "steelblue") +
+    geom_smooth(method = "lm", formula = y ~ x, se = FALSE, color = "red") +
+    geom_text_repel(aes(label = ion_match), size = 4, box.padding = 0.75, max.overlaps = 10)
+    geom_text(
+      aes(
+        x = max(x),  # Bottom-right corner
+        y = min(sigma_T_sq),
+        label = r_squared_label
+      ),
+      hjust = 1,  # Right align
+      vjust = 0,  # Bottom align
+      size = 4,
+      color = "black"
+    ) + 
+     annotate(
+      "text",
+      x = min(df$x),    # Position equation at left edge
+      y = max(df$sigma_T_sq),  # Position equation at top
+      label = paste(equation,r_squared_label, sep = "\n"),  # Combine equation and R²
+      parse = TRUE,  # Parse LaTeX-like symbols
+      hjust = 0,     # Align text to the left
+      vjust = 1,     # Align text to the top
+      size = 4,
+      color = "black"
+    )
+}
+
+
+
+
+
+
+runAll <- function(df, tolerance, ref_ion, ref_ion_match){
+    
+  df_matched = findMatchingIonMz(mzML_df =  df, 
+                                 matching_ion_mz_df =  ref_ion_match,
+                                 tolerance =  tolerance)
+  
+  MS2_ratio = calcIntensityRatio(calcIonCount(df_matched), 
+                                 ref_ion = ref_ion)
+  
+  MS2_regression = calcIonCalibrationData(MS2_ratio, ref_ion)
+  
+  print(paste("Finished: ", ref_ion, "for ", deparse(substitute(df))))
+  
+  return(calcLinearRegression(MS2_regression))
+}
+
+
+
+
+
+runAllPlotting <- function(df, tolerance, ref_ion, ref_ion_match){
+
+  df_matched = findMatchingIonMz(mzML_df =  df, 
+                                 matching_ion_mz_df =  ref_ion_match,
+                                 tolerance =  tolerance)
+  
+  MS2_ratio = calcIntensityRatio(calcIonCount(df_matched), 
+                                 ref_ion = ref_ion)
+  
+  MS2_regression = calcIonCalibrationData(MS2_ratio,                                                      ref_ion)
+  return(MS2_regression)
+}
+
+
+
+
+line_size <- 1 # defining variable upfront as we will re-use it
+base_size <- 18 # defining separately, same as for line_size
+axis_text_rel_size = -1
+title_text_rel_size = +2
+
+prism_theme <- theme_foundation(base_size = base_size, base_family = "sans") +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    text = element_text(colour = "black"),
+    plot.title = element_text(
+      face = "bold",
+      size = rel((title_text_rel_size + base_size) / base_size),
+      hjust = 0.5
+    ),
+    axis.line = element_line(colour = "black", size = line_size),
+    axis.ticks = element_line(colour = "black", size = line_size),
+    axis.title = element_text(face = "bold", size = rel(1)),
+    axis.title.y = element_text(angle = 90, vjust = 2),
+    axis.title.x = element_text(vjust = -0.2),
+    axis.text = element_text(face = "bold", size = rel((axis_text_rel_size + base_size) / base_size)),
+    axis.text.x = element_text(  # Specifically adjust x-axis text
+      face = "bold",
+      size = rel((axis_text_rel_size + base_size) / base_size),
+      angle = 0,
+      hjust = 0.5,
+      vjust = 0
+    ),
+    plot.background = element_blank(),
+    legend.title = element_text(
+      face = "bold",  # Same as axis titles
+      size = rel(1),  # Match axis title size
+      colour = "black"  # Ensure color consistency
+    ),
+    legend.text = element_text(
+      face = "bold",  # Same as axis text
+      size = rel((axis_text_rel_size + base_size) / base_size),  # Match axis text size
+      colour = "black"
+    )
+  )
+
+
+create_calibration_table <- function(model_list, calmix_data, output_dir = "model_results", file_name = "calibration_table.csv") {
+  # Validate inputs
+  if (!is.list(model_list) || !all(sapply(model_list, function(x) inherits(x, "lm")))) {
+    stop("model_list must be a list of lm objects")
+  }
+  if (!"ion" %in% colnames(calmix_data)) {
+    stop("calmix_data must contain an 'ion' column")
+  }
+  if (length(model_list) != nrow(calmix_data)) {
+    stop("Number of models must match number of ions in calmix_data")
+  }
+  
+  # Create output directory if it doesn't exist
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+  
+  # Extract metrics from models
+  extract_metrics <- function(model) {
+    c(
+      R_sq = summary(model)$r.squared,
+      slope = coef(model)[[2]],
+      intercept = coef(model)[[1]]
+    )
+  }
+  
+  # Create data frame with metrics and compound names
+  calibration_table <- data.frame(
+    t(sapply(model_list, extract_metrics)),
+    compound = calmix_data$ion
+  )
+  
+  calibration_table$weighted_slope = calibration_table$R_sq * calibration_table$slope
+  
+  calibration_table$weighted_intercept = calibration_table$R_sq * calibration_table$intercept
+
+  # Write the entire table to a single CSV file
+  write.csv(
+    calibration_table,
+    file = file.path(output_dir, file_name),
+    row.names = FALSE
+  )
+  
+  # Print confirmation message
+  message("Calibration table saved to: ", file.path(output_dir, file_name))
+  
+  # Return the combined calibration table
+  return(calibration_table)
+}
+
+write_calibration_df <- function(model_list, calmix_data, output_dir = "model_results", file_name = "calibration_table.csv") {
+  # Validate inputs
+  if (!is.list(model_list) || !all(sapply(model_list, function(x) inherits(x, "lm")))) {
+    stop("model_list must be a list of lm objects")
+  }
+  if (!"ion" %in% colnames(calmix_data)) {
+    stop("calmix_data must contain an 'ion' column")
+  }
+  if (length(model_list) != nrow(calmix_data)) {
+    stop("Number of models must match number of ions in calmix_data")
+  }
+  
+  # Create output directory if it doesn't exist
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+  
+  # Extract metrics from models, including standard error and inverse variance weight
+  extract_metrics <- function(model) {
+    model_summary <- summary(model)
+    # Assuming the slope is the second coefficient (first is intercept)
+    se <- model_summary$coefficients[2, "Std. Error"]
+    weight <- 1 / (se^2)
+    c(
+      R_sq = model_summary$r.squared,
+      slope = coef(model)[[2]],
+      intercept = coef(model)[[1]],
+      se = se,
+      weight = weight
+    )
+  }
+  
+  # Create a data frame with metrics and compound names
+  calibration_table <- data.frame(
+    t(sapply(model_list, extract_metrics)),
+    compound = calmix_data$ion
+  )
+  
+  # Compute weighted values for each individual regression
+  #calibration_table$weighted_slope = calibration_table$weight * calibration_table$slope
+  #calibration_table$weighted_intercept = calibration_table$weight * calibration_table$intercept
+
+  # Optionally, compute the overall weighted average slope (and intercept)
+  #overall_weighted_slope <- sum(calibration_table$weighted_slope) / sum(calibration_table$weight)
+  #overall_weighted_intercept <- sum(calibration_table$weighted_intercept) / sum(calibration_table$weight)
+  
+  # Write the calibration table to a CSV file
+  write.csv(
+    calibration_table,
+    file = file.path(output_dir, file_name),
+    row.names = FALSE
+  )
+  
+  # Print confirmation message
+  message("Calibration table saved to: ", file.path(output_dir, file_name))
+  
+  # Return both the detailed table and overall weighted estimates
+  return(calibration_table)
+}
+
+
+
+calmix_MS1_masses <- data.frame(
+  mz = c(322.0481, 524, 622.0289, 1022.0034, 1121.997, 
+          1221.9906, 1321.9842, 1421.9778, 1521.9714, 
+          1621.9650, 1721.9586, 1821.9522, 1921.9458),
+  ion = c("Hexamethoxy", "MRFA", "Hexkis", "UM1022", "UM1122", 
+         "UM1222", "UM1322", "UM1422", "UM1522", "UM1622", 
+         "UM1722", "UM1822", "UM1922")
+)
+
+
+
+UM1122_MS2_masses <- data.frame(
+  mz = c(553.94, 665.96, 677.98, 765.95, 777.97, 789.99, 877.96, 889.98, 989.97),
+  ion = c("553.9424", "665.9557", "677.98", "765.949", "777.97", "789.9893", "877.96", "889.98", "989.9734")
+)
+
+
+
+UM1822_MS2_masses <- data.frame(
+  mz = c(753.93, 853.92, 945.93, 965.95, 1065.93, 1177.94, 1277.94, 1377.93, 1489.94, 1589.94, 1689.94),
+  ion = c("753.93", "853.92","945.93", "965.95","1065.93", "1177.94", "1277.94", "1377.93", "1489.94", "1589.94", "1689.94")
+)
+
+
+glufib_MS2_masses <- data.frame(
+  mz = c(480.23, 627.32, 684.35, 813.39, 942.4291, 1056.47, 1171.50, 1285.54),
+  ion = c("480.225", "627.3235", "684.35", "813.3879", "942.4291", "1056.47", "1171.5", "1285.54")
+)
+
+```
+
+# File names
+
+```{r}
+
+
+stellar_glufib_file = "../data/ion_calibration/mzML/glu1-fib-Stellar-Rapid.mzML" 
+
+lumos_OT_glufib_file = "../data/ion_calibration/mzML/glu1-fib-Lumos-30kOT.mzML"
+lumos_IT_glufib_file = "../data/ion_calibration/mzML/glu1-fib-Lumos-LIT-rapid.mzML"
+
+exploris_OT_glufib_file =  "../data/ion_calibration/mzML/glu1-fib-exploris-30kOT.mzML"
+
+ascend_OT_glufib_file = "../data/ion_calibration/mzML/glu1-fib-Ascend-30kOT.mzML"
+ascend_IT_glufib_file =  "../data/ion_calibration/mzML/glu1-fib-Ascend-LIT-Rapid.mzML"
+
+
+actis_OT_glufib_file =  "../data/ion_calibration/mzML/glu1-fib-Actis-30kOT.mzML"
+
+Astral_OT_glufib_file =  "../data/ion_calibration/mzML/glu1-fib-Astral-30kOT.mzML"
+
+actis_astral_UM1822_file =  "../data/ion_calibration/mzML/calmix-Actis-UM1822-Astral.mzML"
+actis_astral_UM1122_file =  "../data/ion_calibration/mzML/calmix-Actis-UM1122-Astral.mzML"
+actis_astral_glufib_file =  "../data/ion_calibration/mzML/glu1-fib-Actis-Astral.mzML"
+
+Astral_astral_UM1822_file =  "../data/ion_calibration/mzML/calmix-Astral-UM1822-Astral.mzML"
+Astral_astral_UM1122_file =  "../data/ion_calibration/mzML/calmix-Astral-UM1122-Astral.mzML"
+Astral_astral_glufib_file =  "../data/ion_calibration/mzML/glu1-fib-Astral-Astral.mzML"
+
+
+
+
+stellar_glufib_df = processMzML(stellar_glufib_file)
+
+lumos_OT_glufib_df = processMzML(lumos_OT_glufib_file)
+
+lumos_IT_glufib_df = processMzML(lumos_IT_glufib_file)
+
+exploris_OT_glufib_df = processMzML(exploris_OT_glufib_file)
+
+ascend_OT_glufib_df = processMzML(ascend_OT_glufib_file)
+
+ascend_IT_glufib_df = processMzML(ascend_IT_glufib_file)
+
+actis_UM1822_df = processMzML(actis_astral_UM1822_file)
+actis_UM1122_df = processMzML(actis_astral_UM1122_file)
+actis_glufib_df = processMzML(actis_astral_glufib_file)
+
+actis_OT_glufib_df = processMzML(actis_OT_glufib_file)
+
+Astral_astral_UM1822_df = processMzML(Astral_astral_UM1822_file)
+Astral_astral_UM1122_df = processMzML(Astral_astral_UM1122_file)
+Astral_astral_glufib_df = processMzML(Astral_astral_glufib_file)
+
+Astral_OT_glufib_df = processMzML(Astral_OT_glufib_file)
+
+```
+
+
+
+
+# Fig. S2: Fragmentation of GluFib, Ultramarks
+```{r, fig.width=7, fig.height=10}
+
+# In here, we need to plot the three spectrums, we can just use the astral data to make these plots. 
+
+
+plottingSpectra <- function(spectra, matching_ion_df, ymaximum, nameTitle) {
+  matched_df <- findMatchingIonMz(spectra, matching_ion_mz_df = matching_ion_df, tolerance = 0.5)
+  
+  # Convert mz to a factor for discrete color mapping
+  matched_df <- matched_df %>%
+    mutate(mz_factor = as.factor(round(mz, 2)))
+  
+  # Ensure highlight_colors has the correct number of colors
+  highlight_colors <- brewer.pal(n = min(9, length(unique(matched_df$mz_factor))), name = "Set1")
+  
+  # Calculate the maximum intensity and define y-axis limits
+  max_intensity <- max(spectra$intensity)
+  y_upper_limit <- max_intensity * 1.1  # 10% padding above max intensity
+  
+  # Generate breaks to include 0, the max intensity, and intermediate values
+  y_breaks <- scales::pretty_breaks()(c(0, y_upper_limit))
+  
+  # Create the plot
+  ggplot(spectra, aes(x = mz, y = intensity)) +
+    geom_segment(
+      data = matched_df,
+      aes(
+        x = mz,
+        xend = mz,
+        y = 0,
+        yend = max_intensity + 20000,  # Extend to max intensity
+        color = mz_factor
+      ),
+      size = 2,
+      alpha = 0.3
+    ) +
+    geom_segment(aes(xend = mz, yend = 0), linewidth = 0.75) +  # Original spectrum peaks
+    scale_y_continuous(
+      expand = expansion(mult = c(0, 0.1)),  # 10% padding at the top only
+      limits = c(0, y_upper_limit),
+      breaks = y_breaks  # Use explicit breaks
+    ) +
+    scale_x_continuous(
+      breaks = seq(200, ymaximum, by = 200),
+      limits = c(200, ymaximum)
+    ) +
+    labs(
+      x = "m/z",
+      y = "Intensity (a.u.)",
+      title = nameTitle,
+      color = "m/z values"
+    ) +
+    prism_theme 
+    #theme(plot.margin = margin(10, 10, 10, 10, "pt"))  # Add margin to prevent clipping
+}
+
+
+
+glufib_spectra <- Astral_astral_glufib_df %>%
+  filter(scan_num == 300) %>%
+  select(intensity, mz, scan_num)
+
+UM1122_spectra <- Astral_astral_UM1122_df %>%
+  filter(scan_num == 300) %>%
+  select(intensity, mz, scan_num)
+  # Bin m/z values and take max intensity in each bin
+
+UM1822_spectra <- Astral_astral_UM1822_df %>%
+  filter(scan_num == 300) %>%
+  select(intensity, mz, scan_num)
+
+
+#plottingSpectra(spectra = glufib_spectra, matching_ion_df = glufib_MS2_masses, 1400, "Glu[1]-Fibrinopeptide B")
+#plottingSpectra(spectra = UM1122_spectra, matching_ion_df = UM1122_MS2_masses, 1200, "Ultramark 1122")
+#plottingSpectra(spectra = UM1822_spectra, matching_ion_df = UM1822_MS2_masses, 2000, "Ultramark 1822")
+
+
+
+
+
+# Generate the plots
+plot1 <- plottingSpectra(spectra = glufib_spectra, matching_ion_df = glufib_MS2_masses, 1400, "Glu[1]-Fibrinopeptide B")
+plot2 <- plottingSpectra(spectra = UM1122_spectra, matching_ion_df = UM1122_MS2_masses, 1200, "Ultramark 1122")
+plot3 <- plottingSpectra(spectra = UM1822_spectra, matching_ion_df = UM1822_MS2_masses, 2000, "Ultramark 1822")
+
+# Arrange plots horizontally and add labels
+combined_plot <- plot1 / plot2 / plot3 +
+  plot_annotation(tag_levels = list(c('A', 'B', 'C')))  &
+  theme(plot.tag = element_text(face = "bold", size = 20))# Add labels A, B, C
+
+# Display the combined plot
+combined_plot
+
+ggsave("../figures/Figure_S2.png", plot = combined_plot, height = 10, width = 7, dpi = 300)
+
+
+
+```
+
+
+
+# Fig S3. Intensity, ratio, and 
+```{r, fig.height=12, fig.width=8}
+
+glufib_ref_ion_astral = "942.4291"
+
+
+df_matched_astral = findMatchingIonMz(mzML_df = Astral_astral_glufib_df, 
+                                 matching_ion_mz_df =  glufib_MS2_masses,
+                                 tolerance =  0.5)
+
+MS2_ratio_astral = calcIntensityRatio(calcIonCount(df_matched_astral), 
+                                 ref_ion = glufib_ref_ion_astral)
+
+MS2_regression_astral = calcIonCalibrationData(MS2_ratio_astral, glufib_ref_ion_astral)
+
+
+df_matched_astral <- df_matched_astral %>%
+  mutate(ion_match = as.numeric(as.character(ion_match))) %>%  # ensure it's numeric
+  mutate(ion_match = factor(ion_match, levels = sort(unique(ion_match))))  # order by m/z
+
+
+
+# Compute median intensity per ion_match
+median_intensities <- df_matched_astral %>%
+  group_by(ion_match) %>%
+  summarise(median_intensity = median(intensity, na.rm = TRUE))
+
+# Plot with median dashed lines
+intensity_astral_plt = ggplot(df_matched_astral,
+                              aes(x = scan_num, y = intensity)) +
+  geom_line(aes(color = as.character(ion_match)), alpha = 0.35) +
+  geom_hline(data = median_intensities, aes(yintercept = median_intensity, color = as.character(ion_match)), 
+             linetype = "dashed", size = 1) + 
+  scale_y_continuous(labels = comma) +  # This line disables scientific notation
+  ylab("Intensity (a.u.)")+
+  xlab("Scan number")+
+  labs(color = "m/z")+
+  prism_theme +
+  theme(
+    legend.position = "none"
+  )
+
+
+
+
+# Compute median intensity per ion_match
+median_intensities_IT <- df_matched_astral %>%
+  group_by(ion_match) %>%
+  summarise(median_intensity_IT = median(intensity * injectionTime, na.rm = TRUE))
+
+# Plot with median dashed lines
+ions_astral_plt = ggplot(df_matched_astral, aes(x = scan_num, y = intensity * injectionTime)) +
+  geom_line(aes(color = as.character(ion_match)), alpha = 0.35) +
+  geom_hline(data = median_intensities_IT, aes(yintercept = median_intensity_IT, color = as.character(ion_match)), 
+             linetype = "dashed", size = 1) + 
+  scale_y_continuous(labels = comma,
+                      breaks = seq(0, 1000000, by = 250000),
+                      limits = c(0, 1000000)) +  # This line disables scientific notation
+  xlab("Scan number")+
+  ylab("Uncalibrated ion count")+
+  labs(color = "m/z")+
+  prism_theme
+
+
+
+# Compute median intensity per ion_match
+median_intensities_ratio <- MS2_ratio_astral %>%
+  group_by(ion_match) %>%
+  summarise(median_intensity_ratio = median(intensity_ratio, na.rm = TRUE))
+
+ratio_astral_plt = ggplot(MS2_ratio_astral, aes(x = scan_num, y = intensity_ratio)) +
+  geom_line(aes(color = as.character(ion_match)), alpha = 0.35) +
+  geom_hline(data = median_intensities_ratio, aes(yintercept = median_intensity_ratio, color = as.character(ion_match)), 
+             linetype = "dashed", size = 1) + 
+  ylim(0, 4)+
+  xlab("Scan number")+
+  ylab("Intensity ratio")+
+  labs(color = "m/z")+
+  prism_theme + guides(color = "none") + 
+  theme(    plot.subtitle = element_text(size = 12))
+
+
+```
+
+## Final plot
+```{r, fig.height=12, fig.width=14}
+
+intensity_astral_plt / ions_astral_plt /ratio_astral_plt + 
+  plot_annotation(tag_levels = list(c('A', 'B', 'C')))  &
+  theme(plot.tag = element_text(face = "bold", size = 20))# Add labels A, B, C
+
+
+ggsave("../figures/Figure_S3_intensity.svg", width = 14, height = 12, dpi = 700)
+
+
+# edit the y-axis in illustrator as SVG
+
+```
+
+
+
+# Fig S4: Ultramark + Glu-fib linear regression
+```{r, fig.width= 12, fig.height=8}
+UM1122_ref_ion = "989.9734"
+UM1822_ref_ion = "1377.93"
+glufib_ref_ion = "942.4291"
+
+
+plotLinearRegression <- function(df, ref_ion) {
+  library(ggplot2)
+  library(ggrepel)
+  
+  model <- lm(sigma_T_sq ~ x, data = df)
+  slope <- coef(model)[["x"]]
+  intercept <- coef(model)[["(Intercept)"]]
+  r_squared <- summary(model)$r.squared
+
+  equation <- sprintf("sigma[T]^2 == %.4f * x + %.4f", slope, intercept)
+  r_squared_label <- sprintf("R^2 == %.4f", r_squared)
+
+  
+  
+  p <- ggplot(df, aes(x = x, y = sigma_T_sq)) +
+    geom_point(size = 3, color = "steelblue") +
+    geom_smooth(method = "lm", formula = y ~ x, se = FALSE, color = "red") +
+    geom_text_repel(
+      aes(label = ion_match),
+      size = 4,
+      box.padding = 0.75,
+      max.overlaps = 4  # Control how many labels appear
+    ) +
+    geom_text(
+      aes(
+        x = max(x),
+        y = min(sigma_T_sq),
+        label = paste("R² =", round(r_squared, 4))
+      ),
+      hjust = 1,
+      vjust = 0,
+      size = 4,
+      color = "black"
+    ) +
+    annotate(
+      "text",
+      x = min(df$x),
+      y = max(df$sigma_T_sq),
+      label = paste(equation, r_squared_label, sep = "\n"),
+      parse = TRUE,
+      hjust = 0,
+      vjust = 1,
+      size = 4,
+      color = "black"
+    ) + 
+  labs(y = expression("Variance (" * sigma[T]^2 * ")"),
+      x = expression(
+      bar(R)^2 ~ "(" * 
+      frac(1, bar(I[a] * t)) + 
+      frac(1, bar(I[b] * t)) * 
+      ")"
+    ))+
+  theme_bw() + 
+  theme(
+    text = element_text(size = 14),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 13),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 13),
+    strip.text = element_text(size = 14)
+  ) + theme(legend.position = "none")
+  
+  return(p)
+}
+
+
+
+
+Astral_glufib_lr_plt = runAllPlotting(Astral_astral_glufib_df, 
+                           tolerance = 0.5, 
+                           ref_ion = glufib_ref_ion,
+                           ref_ion_match = glufib_MS2_masses)
+
+
+Astral_UM1122_lr_plt = runAllPlotting(Astral_astral_UM1122_df, 
+                           tolerance = 0.5, 
+                           ref_ion = UM1122_ref_ion,
+                           ref_ion_match = UM1122_MS2_masses)
+
+
+Astral_UM1822_lr_plt = runAllPlotting(Astral_astral_UM1822_df, 
+                           tolerance = 0.5, 
+                           ref_ion = UM1822_ref_ion,
+                           ref_ion_match = UM1822_MS2_masses)
+
+
+
+
+actis_glufib_lr_plt = runAllPlotting(actis_glufib_df, 
+                           tolerance = 0.5, 
+                           ref_ion = glufib_ref_ion,
+                           ref_ion_match = glufib_MS2_masses)
+
+
+actis_UM1122_lr_plt = runAllPlotting(actis_UM1122_df, 
+                           tolerance = 0.5, 
+                           ref_ion = UM1122_ref_ion,
+                           ref_ion_match = UM1122_MS2_masses)
+
+
+actis_UM1822_lr_plt = runAllPlotting(actis_UM1822_df, 
+                           tolerance = 0.5, 
+                           ref_ion = UM1822_ref_ion,
+                           ref_ion_match = UM1822_MS2_masses)
+
+
+p1 <- plotLinearRegression(Astral_glufib_lr_plt) + theme_bw() + ggtitle("Astral - Glu[1]-Fibrinopeptide B")
+p2 <- plotLinearRegression(Astral_UM1122_lr_plt) + theme_bw() + ggtitle("Astral - Ultramark 1122")
+p3 <- plotLinearRegression(Astral_UM1822_lr_plt) + theme_bw() + ggtitle("Astral - Ultramark 1822")
+
+p4 <- plotLinearRegression(actis_glufib_lr_plt) + theme_bw() + ggtitle("Prototype - Glu[1]-Fibrinopeptide B")
+p5 <- plotLinearRegression(actis_UM1122_lr_plt) + theme_bw() + ggtitle("Prototype - Ultramark 1122")
+p6 <- plotLinearRegression(actis_UM1822_lr_plt) + theme_bw() + ggtitle("Prototype - Ultramark 1822")
+
+
+(p1 | p2 | p3) /
+(p4 | p5 | p6) +
+  plot_annotation(theme = theme(plot.title = element_text(hjust = 0.5)))
+
+ggsave("../figures/Figure_S3.png", width = 12, height = 8, dpi = 700)
+
+```
+
+
+
+# Generate calibration data
+## Takes a long time
+```{r}
+
+# Create all models in one operation
+
+
+exploris_OT_glufib_lr_list <- lapply(glufib_MS2_masses$ion, function(ion) {
+  runAll(df = exploris_OT_glufib_df,
+    tolerance = 0.5,
+    ref_ion = ion,
+    ref_ion_match = glufib_MS2_masses
+  )
+})
+
+
+lumos_OT_glufib_lr_list <- lapply(glufib_MS2_masses$ion, function(ion) {
+  runAll(df = lumos_OT_glufib_df,
+    tolerance = 0.5,
+    ref_ion = ion,
+    ref_ion_match = glufib_MS2_masses
+  )
+})
+
+
+lumos_IT_glufib_lr_list <- lapply(glufib_MS2_masses$ion, function(ion) {
+  runAll(df = lumos_IT_glufib_df,
+    tolerance = 0.5,
+    ref_ion = ion,
+    ref_ion_match = glufib_MS2_masses
+  )
+})
+
+
+stellar_glufib_lr_list <- lapply(glufib_MS2_masses$ion, function(ion) {
+  runAll(df = stellar_glufib_df,
+    tolerance = 0.5,
+    ref_ion = ion,
+    ref_ion_match = glufib_MS2_masses
+  )
+})
+
+
+
+
+ascend_OT_glufib_lr_list <- lapply(glufib_MS2_masses$ion, function(ion) {
+  runAll(df = ascend_OT_glufib_df,
+    tolerance = 0.5,
+    ref_ion = ion,
+    ref_ion_match = glufib_MS2_masses
+  )
+})
+
+
+ascend_IT_glufib_lr_list <- lapply(glufib_MS2_masses$ion, function(ion) {
+  runAll(df = ascend_IT_glufib_df,
+    tolerance = 0.5,
+    ref_ion = ion,
+    ref_ion_match = glufib_MS2_masses
+  )
+})
+
+
+
+actis_glufib_lr_list <- lapply(glufib_MS2_masses$ion, function(ion) {
+  runAll(df = actis_glufib_df,
+    tolerance = 0.5,
+    ref_ion = ion,
+    ref_ion_match = glufib_MS2_masses
+  )
+})
+
+
+
+actis_OT_glufib_lr_list <- lapply(glufib_MS2_masses$ion, function(ion) {
+  runAll(df = actis_OT_glufib_df,
+    tolerance = 0.5,
+    ref_ion = ion,
+    ref_ion_match = glufib_MS2_masses
+  )
+})
+
+
+Astral_OT_glufib_lr_list <- lapply(glufib_MS2_masses$ion, function(ion) {
+  runAll(df = Astral_OT_glufib_df,
+    tolerance = 0.5,
+    ref_ion = ion,
+    ref_ion_match = glufib_MS2_masses
+  )
+})
+
+
+
+Astral_astral_glufib_lr_list <- lapply(glufib_MS2_masses$ion, function(ion) {
+  runAll(df = Astral_astral_glufib_df,
+    tolerance = 0.5,
+    ref_ion = ion,
+    ref_ion_match = glufib_MS2_masses
+  )
+})
+
+
+```
+
+## Save calibration files
+```{r}
+
+
+
+
+exploris_OT_glufib_cal_df = write_calibration_df(model_list = exploris_OT_glufib_lr_list, calmix_data = glufib_MS2_masses, output_dir = "../data/ion_calibration/calibration_results/exploris_OT",
+file_name = "exploris_OT_glufib_cal_table.csv")
+
+
+lumos_OT_glufib_cal_df = write_calibration_df(model_list = lumos_OT_glufib_lr_list, calmix_data = glufib_MS2_masses, output_dir = here("../data/ion_calibration/calibration_results/lumos_OT"),
+file_name = "lumos_OT_glufib_cal_table.csv")
+
+
+
+lumos_IT_glufib_cal_df = write_calibration_df(model_list = lumos_IT_glufib_lr_list, calmix_data = glufib_MS2_masses, output_dir = here("../data/ion_calibration/calibration_results/lumos_IT"),
+file_name = "lumos_IT_glufib_cal_table.csv")
+
+
+
+stellar_glufib_cal_df = write_calibration_df(model_list = stellar_glufib_lr_list, calmix_data = glufib_MS2_masses, output_dir = here("../data/ion_calibration/calibration_results/stellar_IT"),
+file_name = "stellar_IT_glufib_cal_table.csv")
+
+
+
+
+ascend_OT_glufib_cal_df = write_calibration_df(model_list = ascend_OT_glufib_lr_list, calmix_data = glufib_MS2_masses, output_dir = here("../data/ion_calibration/calibration_results/ascend_OT"),
+file_name = "ascend_OT_glufib_cal_table.csv")
+
+
+ascend_IT_glufib_cal_df = write_calibration_df(model_list = ascend_IT_glufib_lr_list, calmix_data = glufib_MS2_masses, output_dir = here("../data/ion_calibration/calibration_results/ascend_IT"),
+file_name = "ascend_IT_glufib_cal_table.csv")
+
+
+
+
+actis_glufib_cal_df = write_calibration_df(model_list = actis_glufib_lr_list, calmix_data = glufib_MS2_masses, output_dir = here("../data/ion_calibration/calibration_results/actis_astral"),
+file_name = "actis_astral_glufib_cal_table.csv")
+
+
+
+actis_OT_glufib_cal_df = write_calibration_df(model_list = actis_OT_glufib_lr_list, calmix_data = glufib_MS2_masses, output_dir = here("../data/ion_calibration/calibration_results/actis_OT"),
+file_name = "actis_OT_glufib_cal_table.csv")
+
+
+
+Astral_astral_glufib_cal_df = write_calibration_df(model_list = Astral_astral_glufib_lr_list, calmix_data = glufib_MS2_masses, output_dir = here("../data/ion_calibration/calibration_results/Astral_astral"),
+file_name = "Astral_astral_glufib_cal_table.csv")
+
+
+
+Astral_OT_glufib_cal_df = write_calibration_df(model_list = Astral_OT_glufib_lr_list, calmix_data = glufib_MS2_masses, output_dir = here("../data/ion_calibration/calibration_results/Astral_OT"),
+file_name = "Astral_OT_glufib_cal_table.csv")
+
+```
+
+
+
+# Table 1 Plotting the new table with just glu-fib
+```{r}
+library(tidyverse)
+library(here)
+library(fs)
+library(flextable)
+
+# 1. Set and verify directory
+parent_dir <- "../data/ion_calibration/calibration_results"
+if (!dir_exists(parent_dir)) stop("Directory not found: ", parent_dir)
+
+# 2. List all .csv files in subfolders
+csv_files <- dir_ls(
+  path = parent_dir,
+  regexp = "\\.csv$",
+  recurse = TRUE,
+  all = TRUE,
+  ignore.case = TRUE
+)
+
+
+if (length(csv_files) == 0) {
+  message("No CSV files found. Check:")
+  message("- Directory: ", parent_dir)
+  message("- File extensions are .csv")
+} else {
+  message("Found ", length(csv_files), " CSV files:")
+  print(csv_files)
+}
+
+
+# 3. Filter glufib files (case-insensitive)
+glufib_files <- csv_files[str_detect(path_file(csv_files), regex("glufib", ignore_case = TRUE))]
+
+# 4. Extract analyzer + instrument from parent folder (e.g., "actis_astral")
+extract_meta <- function(file_path) {
+  folder_name <- path_file(path_dir(file_path))  # e.g., "actis_astral"
+  parts <- unlist(str_split(folder_name, "_"))
+  list(
+    instrument = parts[1],
+    analyzer = ifelse(length(parts) >= 2, parts[2], NA)
+  )
+}
+
+# 5. Load and process each glufib file
+glufib_table <- lapply(glufib_files, function(file_path) {
+  df <- read.csv(file_path)
+  meta <- extract_meta(file_path)
+  
+  df_filtered <- df %>%
+    filter(compound == 942.4291)
+  
+  if (nrow(df_filtered) == 0) return(NULL)
+  
+  df_filtered %>%
+    transmute(
+      instrument = meta$instrument,
+      analyzer = meta$analyzer,
+      slope = slope,
+      SE = se,
+      y_intercept = intercept,
+      R2 = R_sq
+    )
+}) %>% bind_rows()
+
+glufib_table
+
+
+```
+
+
+
+
+
+
+
