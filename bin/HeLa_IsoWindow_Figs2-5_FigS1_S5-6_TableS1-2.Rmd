@@ -2335,7 +2335,7 @@ my_13_colors <- c(
 
 
 # Plot just 500ng
-figure5_supp_full_dist = ggplot(df_ratios, aes(x = Prototype, y = log2MeanRatio)) +
+figure6_supp_full_dist = ggplot(df_ratios, aes(x = Prototype, y = log2MeanRatio)) +
   geom_density_2d_filled(contour_var = "density", bins = 11) +
 
   # Reference line at log2(1)
@@ -2408,10 +2408,10 @@ figure5_supp_full_dist = ggplot(df_ratios, aes(x = Prototype, y = log2MeanRatio)
   ) + theme(plot.title = element_text(size = 22, hjust = 0)) + annotation_logticks(sides = "b")
  
 
-figure5_supp_full_dist
+figure6_supp_full_dist
 
 
-ggsave("../figures/Figure_S6.png", plot = figure5_supp_full_dist, width = 12, height = 14, dpi = 700)
+ggsave("../figures/Figure_S6.png", plot = figure6_supp_full_dist, width = 12, height = 14, dpi = 700)
 
 
 ```
