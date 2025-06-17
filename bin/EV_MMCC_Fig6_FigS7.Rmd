@@ -1,5 +1,5 @@
 ---
-title: "Figure 6"
+title: "Figure 6, Supp Fig 7"
 output: html_document
 date: "2025-04-08"
 ---
@@ -314,8 +314,8 @@ ggsave("../figures/Figure_6.png", plot = fig6, width = 10, height = 5, dpi = 700
 
 
 
-# Figure S6
-## Fig. S6AB: ID list
+# Figure S7
+## Fig. S7AB: ID list
 ```{r, fig.width= 10, fig.height=5}
 
 # Read in data
@@ -427,17 +427,17 @@ proteinplt1 <- ggplot(combined_mmcc_stats, aes(x = Instrument, y = Proteins.Iden
 
 
 # Combine plots with tags A and B
-suppfigure6AB <- (precursorplt1 + proteinplt1) +
+suppfigure7AB <- (precursorplt1 + proteinplt1) +
   plot_annotation(tag_levels = "A") & 
   theme(plot.tag = element_text(size = 20, face = "bold")) + 
     theme(legend.position = "none")
 
 
 
-#ggsave("../ev_IDs.png", plot = suppfigure6AB, height = 5, width = 10, dpi = 700)
+#ggsave("../ev_IDs.png", plot = suppfigure7AB, height = 5, width = 10, dpi = 700)
 
 # Display the figure
-suppfigure6AB
+suppfigure7AB
 
 
 
@@ -445,7 +445,7 @@ suppfigure6AB
 ```
 
 
-## Fig. S6CD: CV plots
+## Fig. S7CD: CV plots
 ### Peptide CV
 ```{r, fig.width= 10, fig.height=6}
 
@@ -562,7 +562,7 @@ protein_cv = ggplot(df_combined_ev_prot_cv_only, aes(x = Instrument, y = CV * 10
 
 
 
-suppfig6CD <- (peptide_cv + protein_cv) + 
+suppfig7CD <- (peptide_cv + protein_cv) + 
   plot_layout(guides = "collect") + 
   plot_annotation(tag_levels = "A") & 
   theme(
@@ -573,13 +573,13 @@ suppfig6CD <- (peptide_cv + protein_cv) +
   )
 
 
-suppfig6CD
+suppfig7CD
 ```
 
 
 
 
-## Fig. S6C Number of ions
+## Fig. S7C Number of ions
 ```{r, fig.width=12, fig.height=8}
 
 df_actis_ions_pept_mmcc = read.csv("../data/extracellular_vesicles/LC_peak_peptide_ions/Actis_Peptide_ions.csv")
@@ -689,7 +689,7 @@ df_ev_long_filtered <- df_ev_long %>%
 
 
 
-suppfig6E_ions_plot <- ggplot(df_ev_long_filtered, aes(x = Rank, y = IonCount)) +
+suppfig7E_ions_plot <- ggplot(df_ev_long_filtered, aes(x = Rank, y = IonCount)) +
   # Points
   geom_point(data = filter(df_ev_long_filtered, Instrument == "Astral"),
              aes(color = Instrument)) +
@@ -757,20 +757,20 @@ suppfig6E_ions_plot <- ggplot(df_ev_long_filtered, aes(x = Rank, y = IonCount)) 
 
 ```
 
-## Full plot Fig. S6
+## Full plot Fig. S7
 ```{r, fig.width= 8, fig.height=15}
 
- SupplFig6_final <- (suppfigure6AB / suppfig6CD) / (suppfig6E_ions_plot) +
+ SupplFig7_final <- (suppfigure7AB / suppfig7CD) / (suppfig7E_ions_plot) +
    plot_layout(widths = c(0.8, 0.2)) + 
   plot_annotation(tag_levels = "A") +
   theme(
      plot.tag = element_text(size = 20, face = "bold")
   )
 # Print or save the final figure
-SupplFig6_final
+SupplFig7_final
 
 
-ggsave("../figures/Figure_S6_EV.png", plot = SupplFig6_final, width = 8, height = 15, dpi = 700)
+ggsave("../figures/Figure_S6_EV.png", plot = SupplFig7_final, width = 8, height = 15, dpi = 700)
 
 ```
 
