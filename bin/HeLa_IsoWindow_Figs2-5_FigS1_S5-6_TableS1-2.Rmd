@@ -2160,7 +2160,7 @@ ggsave("../figures/Figure_5.png", plot = figure5_mode, width = 16, height = 14, 
 
 
 
-## Figure S4: Apex total spectrum ions
+## Figure S5: Apex total spectrum ions
 ```{r, fig.width= 12, fig.height=8}
 
 
@@ -2256,7 +2256,7 @@ figure5_supp_apex = ggplot(df_apex_ions_combined1, aes(x = factor(mass), y = Mea
 
 figure5_supp_apex
 
-ggsave("../figures/Figure_S4_supp_apex.png", plot = figure5_supp_apex, width = 12, height = 8, dpi = 700)
+ggsave("../figures/Figure_S5_supp_apex.png", plot = figure5_supp_apex, width = 12, height = 8, dpi = 700)
 
 
 
@@ -2266,7 +2266,7 @@ ggsave("../figures/Figure_S4_supp_apex.png", plot = figure5_supp_apex, width = 1
 
 
 
-## Figure S5: Full distr Log2 Ratio LC IONS
+## Figure S6: Full distr Log2 Ratio LC IONS
 ```{r, fig.width=12, fig.height=14}
 
 
@@ -2411,7 +2411,7 @@ figure5_supp_full_dist = ggplot(df_ratios, aes(x = Prototype, y = log2MeanRatio)
 figure5_supp_full_dist
 
 
-ggsave("../figures/Figure_S5.png", plot = figure5_supp_full_dist, width = 12, height = 14, dpi = 700)
+ggsave("../figures/Figure_S6.png", plot = figure5_supp_full_dist, width = 12, height = 14, dpi = 700)
 
 
 ```
